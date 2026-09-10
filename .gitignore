@@ -1,0 +1,16 @@
+# .NET ignore
+**/bin/
+**/obj/
+*.user
+*.suo
+.vs/
+
+# Node / React ignore
+**/node_modules/
+**/build/
+.npm
+npm-debug.log*
+
+# System ignore
+.DS_Store
+Thumbs.db
