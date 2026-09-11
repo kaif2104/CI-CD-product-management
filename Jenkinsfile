@@ -22,7 +22,7 @@ pipeline {
                 echo 'Running .NET Unit Tests...'
                 sh '''
                     mkdir -p $DOTNET_CLI_HOME
-                    dotnet test Backend-Source/ProductAPI.Tests/ProductAPI.Tests.csproj -c Release
+                    dotnet test Backend-Source/ProductTests/ProductTests.csproj -c Release
                     dotnet publish Backend-Source/ProductAPI/ProductAPI.csproj -c Release -o ./build-output/backend
                 '''
             }
