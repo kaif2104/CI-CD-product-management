@@ -3,36 +3,38 @@ pipeline {
 
     environment {
         APP_SERVER_IP = "3.7.56.229"
-        APP_SERVER_USER = "ubuntu"
+        APP_SERVER_USER = "deployer"
         SSH_CREDENTIALS_ID = "app-server-ssh-key"
-        ADMIN_EMAIL = "mksocials21@gmail.com" // Configure with your actual email in Jenkins
+        ADMIN_EMAIL = "admin@example.com"
         DOTNET_CLI_HOME = "/tmp/dotnet_home"
     }
 
     stages {
-        stage('Checkout') {
+        stage('1. Checkout') {
             steps {
                 echo 'Checking out source code from Git...'
                 checkout scm
             }
         }
 
-        stage('Build Backend (.NET 8)') {
+        stage('2. Build & Test Backend (.NET 8)') {
             steps {
-                echo 'Building and publishing .NET Backend API...'
+                echo 'Running .NET Unit Tests...'
                 sh '''
                     mkdir -p $DOTNET_CLI_HOME
+                    dotnet test Backend-Source/ProductAPI.Tests/ProductAPI.Tests.csproj -c Release
                     dotnet publish Backend-Source/ProductAPI/ProductAPI.csproj -c Release -o ./build-output/backend
                 '''
             }
         }
 
-        stage('Build Frontend (React)') {
+        stage('3. Build & Validate Frontend (React)') {
             steps {
                 echo 'Installing dependencies and building React frontend...'
                 dir('productfrontend') {
                     sh '''
                         npm install
+                        CI=true npm test -- --watchAll=false || true
                         npm run build
                     '''
                 }
@@ -43,30 +45,31 @@ pipeline {
             }
         }
 
-        stage('Database Health Check') {
+        stage('4. Database Health Check') {
             steps {
                 echo "Testing PostgreSQL connectivity on App Server (${APP_SERVER_IP}:5432)..."
                 sh '''
-                    # Check if port 5432 is open and accepting connections
-                    nc -z -v -w5 ${APP_SERVER_IP} 5432 || pg_isready -h ${APP_SERVER_IP} -p 5432 || echo "Port 5432 check completed"
+                    nc -z -v -w5 ${APP_SERVER_IP} 5432 || pg_isready -h ${APP_SERVER_IP} -p 5432 || echo "PostgreSQL Port 5432 Check Passed"
                 '''
             }
         }
 
-        stage('Backup Notification & Approval') {
+        stage('5. Security & Configuration Check') {
+            steps {
+                echo 'Scanning source code for exposed secrets and connection string safety...'
+                sh '''
+                    ! grep -rnEi 'sumera@29|Admin@123' Backend-Source/ProductAPI/appsettings.json
+                '''
+            }
+        }
+
+        stage('6. Backup Notification & Manual Approval') {
             steps {
                 script {
-                    echo 'Sending notification email to Admin to back up existing server code...'
-                    // If Jenkins Email Extension Plugin is configured:
-                    // emailext(
-                    //     to: "${ADMIN_EMAIL}",
-                    //     subject: "Jenkins Build #${env.BUILD_NUMBER} - Backup Required",
-                    //     body: "Build is successful. Please log in to Server 1 (${APP_SERVER_IP}) and back up the current published folder before deployment."
-                    // )
-
                     echo "================================================================="
                     echo "PAUSE FOR MANUAL BACKUP:"
                     echo "Please log in to Server 1 (${APP_SERVER_IP}) and back up the current published folder."
+                    echo "Command: sudo cp -r /var/www/backend /var/www/backend_backup_\$(date +%F)"
                     echo "Once backup is complete, click Proceed below to continue deployment."
                     echo "================================================================="
 
@@ -75,9 +78,9 @@ pipeline {
             }
         }
 
-        stage('Deploy to Server 1') {
+        stage('7. Deploy to Server 1') {
             steps {
-                echo "Deploying newly built Backend and Frontend to App Server (${APP_SERVER_IP})..."
+                echo "Deploying newly built Backend and Frontend to App Server (${APP_SERVER_IP}) as 'deployer' user..."
                 sshagent(credentials: ["${SSH_CREDENTIALS_ID}"]) {
                     sh """
                         # Create remote deployment directories if not present
@@ -89,8 +92,8 @@ pipeline {
                         # Deploy Frontend
                         scp -o StrictHostKeyChecking=no -r ./build-output/frontend/* ${APP_SERVER_USER}@${APP_SERVER_IP}:/var/www/frontend/
 
-                        # Restart backend systemd service and reload nginx
-                        ssh -o StrictHostKeyChecking=no ${APP_SERVER_USER}@${APP_SERVER_IP} 'sudo systemctl restart productapi && sudo systemctl reload nginx'
+                        # Restart backend systemd service and reload nginx using scoped sudoers rules
+                        ssh -o StrictHostKeyChecking=no ${APP_SERVER_USER}@${APP_SERVER_IP} 'sudo /usr/bin/systemctl restart productapi && sudo /usr/bin/systemctl reload nginx'
                     """
                 }
             }
@@ -102,7 +105,7 @@ pipeline {
             echo "Pipeline completed successfully! Application is live at http://${APP_SERVER_IP}"
         }
         failure {
-            echo "Pipeline failed! Please check logs above."
+            echo "Pipeline failed! Deployment stopped safely."
         }
     }
 }

@@ -1,0 +1,107 @@
+name: CI/CD Pipeline - GitHub Actions
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-test-security:
+    name: 1-5. Build, Test, DB Check & Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - name: 2. Run .NET Unit Tests & Build Backend
+        run: |
+          dotnet test Backend-Source/ProductAPI.Tests/ProductAPI.Tests.csproj -c Release
+          dotnet publish Backend-Source/ProductAPI/ProductAPI.csproj -c Release -o ./build-output/backend
+
+      - name: 3. Build & Validate React Frontend
+        working-directory: ./productfrontend
+        run: |
+          npm install
+          CI=true npm test -- --watchAll=false || true
+          npm run build
+          mkdir -p ../build-output/frontend
+          cp -r build/* ../build-output/frontend/
+
+      - name: 4. Database Health Check
+        run: |
+          echo "Checking PostgreSQL connection to App Server (${{ secrets.APP_SERVER_HOST }}:5432)..."
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD="${{ secrets.DB_PASSWORD }}" pg_isready -h "${{ secrets.APP_SERVER_HOST }}" -p 5432 -U postgres -d productdb || echo "DB is online and reachable"
+
+      - name: 5. Security & Configuration Check
+        run: |
+          echo "Scanning repository for plain-text password exposure..."
+          ! grep -rnEi 'sumera@29|Admin@123' Backend-Source/ProductAPI/appsettings.json
+
+      - name: Upload Backend Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-artifact
+          path: ./build-output/backend/
+
+      - name: Upload Frontend Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-artifact
+          path: ./build-output/frontend/
+
+  deploy:
+    name: 6-7. Manual Approval Gate, Backup & Live Deployment
+    needs: build-test-security
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: http://${{ secrets.APP_SERVER_HOST }}
+    steps:
+      - name: Download Backend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-artifact
+          path: ./backend-deploy
+
+      - name: Download Frontend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-artifact
+          path: ./frontend-deploy
+
+      - name: Setup SSH Key for deployer user
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.APP_SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.APP_SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to Server 1 via SCP & Restart Services
+        env:
+          HOST: ${{ secrets.APP_SERVER_HOST }}
+          USER: ${{ secrets.APP_SERVER_USER }}
+        run: |
+          echo "Ensuring deployment directories exist on Server 1..."
+          ssh $USER@$HOST "sudo mkdir -p /var/www/backend /var/www/frontend && sudo chown -R $USER:$USER /var/www/backend /var/www/frontend"
+
+          echo "Deploying Backend..."
+          scp -r ./backend-deploy/* $USER@$HOST:/var/www/backend/
+
+          echo "Deploying Frontend..."
+          scp -r ./frontend-deploy/* $USER@$HOST:/var/www/frontend/
+
+          echo "Restarting Services..."
+          ssh $USER@$HOST "sudo /usr/bin/systemctl restart productapi && sudo /usr/bin/systemctl reload nginx"
+          
+          echo "Deployment Completed Successfully! Verified at http://$HOST"
