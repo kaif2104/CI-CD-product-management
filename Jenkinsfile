@@ -84,7 +84,7 @@ pipeline {
                 sshagent(credentials: ["${SSH_CREDENTIALS_ID}"]) {
                     sh """
                         # Create remote deployment directories if not present
-                        ssh -o StrictHostKeyChecking=no ${APP_SERVER_USER}@${APP_SERVER_IP} 'sudo mkdir -p /var/www/backend /var/www/frontend && sudo chown -R ${APP_SERVER_USER}:${APP_SERVER_USER} /var/www/backend /var/www/frontend'
+                        ssh -o StrictHostKeyChecking=no ${APP_SERVER_USER}@${APP_SERVER_IP} 'mkdir -p /var/www/backend /var/www/frontend'
 
                         # Deploy Backend
                         scp -o StrictHostKeyChecking=no -r ./build-output/backend/* ${APP_SERVER_USER}@${APP_SERVER_IP}:/var/www/backend/
